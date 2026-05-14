@@ -8,7 +8,7 @@ def get_claude_response(messages: list) -> str:
     with client.messages.stream(
         model="claude-opus-4-7",
         max_tokens=16000,
-        system="You are a helpful assistant providing clear and accurate answers.",
+        system="You are a helpful assistant. Answer any question the user asks clearly and accurately.",
         messages=messages,
         cache_control={"type": "ephemeral"},
     ) as stream:
@@ -28,7 +28,7 @@ def main():
 
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = [
-            {"role": "assistant", "content": "Hi! I'm here to answer your questions about PGX"}
+            {"role": "assistant", "content": "Hi! I'm here to answer any question you have."}
         ]
 
     for chat in st.session_state.chat_history:
