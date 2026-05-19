@@ -340,12 +340,13 @@ def normalize_sectors(df: pd.DataFrame) -> pd.DataFrame:
         still_unmapped = ~df["sector"].isin(SECTORS)
         if still_unmapped.any():
             bad = df.loc[still_unmapped, "sector"].unique()
-            print(f"\n  [!] {still_unmapped.sum()} rows have unrecognised sector values (kept):")
+            print(f"\n  [!] {still_unmapped.sum()} rows will be dropped — unrecognised sector values:")
             for val in bad:
                 count = (df.loc[still_unmapped, "sector"] == val).sum()
                 print(f"      '{val}'  ({count} rows)")
-            log.warning("  %d rows have unrecognised sector values (kept): %s",
+            log.warning("  Dropping %d rows — sector unrecognised after recovery attempt: %s",
                         still_unmapped.sum(), list(bad))
+            df = df[~still_unmapped].reset_index(drop=True)
 
     return df
 
