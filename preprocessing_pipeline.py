@@ -1,8 +1,8 @@
 """
 preprocessing_pipeline.py — HR data pipeline: Excel → JSON / CSV
 
-Reads HR assessment Excel files, normalises the data, computes per-employee
-alignment, and writes cleaned_hr_data.json and cleaned_hr_data.csv.
+Reads HR assessment Excel files, normalises the data, computes institute-level
+analytics and per-employee alignment, and writes 4 output files.
 
 Self-contained: no backend imports. All config comes from JSON files.
 
@@ -10,9 +10,16 @@ Usage:
     python scripts/preprocessing_pipeline.py
     python scripts/preprocessing_pipeline.py --input-dir scripts/data/
     python scripts/preprocessing_pipeline.py file1.xlsx file2.xlsx
-    python scripts/preprocessing_pipeline.py --input-dir scripts/data/ --output backend/hrData/cleaned_hr_data.json
+    python scripts/preprocessing_pipeline.py --input-dir scripts/data/ --output backend/hrData/institution_hr.json
     python scripts/preprocessing_pipeline.py --input-dir scripts/data/ --stage load
     python scripts/preprocessing_pipeline.py --input-dir scripts/data/ --stage normalize
+
+Outputs (all written to the same folder as --output):
+    institution_hr.json          — summary + institute analytics
+    institution_hr_staff.json    — per-employee records (JSON)
+    institution_hr_staff.csv     — per-employee records (CSV)
+    institution_hr_institutes.csv — institute analytics (flat CSV)
+    dropped_rows_report.txt      — rows skipped and why
 """
 import sys
 import json
@@ -29,14 +36,14 @@ log = logging.getLogger(__name__)
 # Configuration
 
 _SCRIPTS_DIR  = Path(__file__).parent
-_BACKEND_DATA = Path(__file__).parent.parent / "backend" / "data"
+_BACKEND_DATA = Path(__file__).parent.parent / "data"
 
 COLUMNS      = json.loads((_SCRIPTS_DIR / "columns.json").read_text(encoding="utf-8"))
 TRANSLATIONS = json.loads((_SCRIPTS_DIR / "translations.json").read_text(encoding="utf-8"))
 ORG          = json.loads((_BACKEND_DATA.parent / "refs" / "org_structure.json").read_text(encoding="utf-8"))
 
 DEFAULT_INPUT  = Path(__file__).parent / "data"
-DEFAULT_OUTPUT = Path(__file__).parent.parent / "backend" / "hrData" / "cleaned_hr_data.json"
+DEFAULT_OUTPUT = Path(__file__).parent.parent / "hrData" / "institution_hr.json"
 
 HEADER_ROW      = 6
 SHEET_PREFIX    = "hr template"
@@ -413,7 +420,189 @@ def detect_vp_office(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# Stage 3 — Alignment (per-employee)
+# Stage 3 — Enrich
+
+def build_hr_metrics(df: pd.DataFrame) -> tuple[list[dict], dict]:
+    log.info("Stage 3 — Enrich")
+
+    df = classify_alignment(df)
+
+    headcount = df
+    if len(headcount) == 0:
+        raise ValueError("No active staff found after filtering.")
+
+    institutes = build_institute_documents(headcount, full_df=df)
+
+    total      = len(headcount)
+    n_research = sum(i["n_research"]  for i in institutes)
+    n_admin    = sum(i["n_admin"]     for i in institutes)
+    n_exec     = sum(i["n_executive"] for i in institutes)
+    n_phd      = sum(i["n_phd"]       for i in institutes)
+    aligned    = sum(i["aligned"]     for i in institutes)
+    misaligned = sum(i["misaligned"]  for i in institutes)
+
+    summary = {
+        "total_staff":    total,
+        "researcher_pct": percentage(n_research, total),
+        "phd_pct":        percentage(n_phd,      total),
+        "admin_exec_pct": percentage(n_admin,     total),
+        "n_executive":    n_exec,
+        "aligned_pct":    percentage(aligned,     n_research),
+        "misaligned_pct": percentage(misaligned,  n_research),
+    }
+
+    log.info("  %d institutes — %d staff", len(institutes), total)
+    return df, institutes, summary
+
+
+def build_institute_documents(headcount: pd.DataFrame, full_df: pd.DataFrame) -> list[dict]:
+    researchers = headcount[headcount["career_path"] == "Research"]
+    documents   = []
+    seen: set[tuple[str, str]] = set()
+
+    for sector in SECTORS:
+        sector_staff = headcount[headcount["sector"] == sector]
+        for institute in INSTITUTES.get(sector, []):
+            institute_staff = sector_staff[sector_staff["institute"] == institute]
+            if len(institute_staff) == 0:
+                continue
+            seen.add((institute, sector))
+            documents.append(build_institute_document(institute, sector, institute_staff, researchers, full_df))
+
+        vp_staff = sector_staff[sector_staff["institute"] == "VP Office"]
+        if len(vp_staff) > 0:
+            seen.add(("VP Office", sector))
+            documents.append(build_institute_document("VP Office", sector, vp_staff, researchers, full_df))
+
+    for (institute, sector), institute_staff in headcount.groupby(["institute", "sector"]):
+        if (institute, sector) not in seen:
+            log.warning("  Unregistered institute in data: '%s' (%s)", institute, sector)
+            documents.append(build_institute_document(institute, sector, institute_staff, researchers, full_df))
+
+    documents.sort(key=lambda doc: doc["total"], reverse=True)
+    return documents
+
+
+def build_institute_document(
+    institute: str,
+    sector: str,
+    staff: pd.DataFrame,
+    all_researchers: pd.DataFrame,
+    full_df: pd.DataFrame,
+) -> dict:
+    institute_researchers = all_researchers[all_researchers["institute"] == institute]
+    all_institute_rows    = full_df[(full_df["institute"] == institute) & (full_df["sector"] == sector)]
+
+    total   = len(staff)
+    n_res   = len(institute_researchers)
+    n_eng   = len(staff[staff["career_path"] == "Engineering"])
+    n_tech  = len(staff[staff["career_path"] == "Technical"])
+    n_admin = len(staff[staff["career_path"] == "Administrative"])
+    n_exec  = int(staff["is_executive"].sum()) if "is_executive" in staff.columns else 0
+    n_phd   = len(staff[staff["degree"] == "PhD"])
+
+    n_on_scholarship = int((staff["status"]              == "OnScholarship").sum()) if "status" in staff.columns              else 0
+    n_resigned       = int((all_institute_rows["status"] == "Resigned").sum())      if "status" in all_institute_rows.columns else 0
+    n_transferred    = int((all_institute_rows["status"] == "Transferred").sum())   if "status" in all_institute_rows.columns else 0
+    n_terminated     = int((all_institute_rows["status"] == "Terminated").sum())    if "status" in all_institute_rows.columns else 0
+
+    n_aligned    = len(institute_researchers[institute_researchers["alignment"] == "Aligned"])
+    n_partial    = len(institute_researchers[institute_researchers["alignment"] == "Partial"])
+    n_misaligned = len(institute_researchers[institute_researchers["alignment"] == "Misaligned"])
+
+    n_sector_aligned    = len(institute_researchers[institute_researchers["sector_alignment"] == "Aligned"])    if "sector_alignment" in institute_researchers.columns else 0
+    n_sector_partial    = len(institute_researchers[institute_researchers["sector_alignment"] == "Partial"])    if "sector_alignment" in institute_researchers.columns else 0
+    n_sector_misaligned = len(institute_researchers[institute_researchers["sector_alignment"] == "Misaligned"]) if "sector_alignment" in institute_researchers.columns else 0
+
+    technical_staff = staff[staff["career_path"].isin(["Research", "Engineering", "Technical"])]
+    focus_totals    = aggregate_focus_areas(technical_staff)
+    focus_areas     = [
+        {"domain": area, "weight": round(weight, 4), "tier": FOCUS_AREA_TIERS.get(area, "Tier3")}
+        for area, weight in focus_totals.items()
+    ]
+    top_domains = [
+        area for area, weight
+        in sorted(focus_totals.items(), key=lambda x: x[1], reverse=True)
+        if weight > 0
+    ][:3]
+
+    degree_counts = staff["degree"].value_counts()
+    by_degree = [
+        {"degree": deg, "count": int(degree_counts.get(deg, 0))}
+        for deg in DEGREE_ORDER
+        if degree_counts.get(deg, 0) > 0
+    ]
+    by_gender = [
+        {"gender": gender, "count": int(count)}
+        for gender, count in staff["gender"].value_counts().items()
+        if gender in {"Male", "Female"}
+    ]
+
+    is_vp = bool(staff["is_vp_office"].any()) if "is_vp_office" in staff.columns else False
+
+    return {
+        "institute":          institute,
+        "sector":             sector,
+        "total":              total,
+        "is_vp_office":       is_vp,
+        "n_research":         n_res,
+        "n_engineering":      n_eng,
+        "n_technical":        n_tech,
+        "n_admin":            n_admin,
+        "n_executive":        n_exec,
+        "n_phd":              n_phd,
+        "n_on_scholarship":   n_on_scholarship,
+        "n_resigned":         n_resigned,
+        "n_transferred":      n_transferred,
+        "n_terminated":       n_terminated,
+        "research_pct":       percentage(n_res,         total),
+        "admin_pct":          percentage(n_admin,       total),
+        "leadership_pct":     percentage(n_exec,        total),
+        "phd_pct":            percentage(n_phd,         total),
+        "aligned":            n_aligned,
+        "partial":            n_partial,
+        "misaligned":         n_misaligned,
+        "aligned_pct":        percentage(n_aligned,     n_res),
+        "misaligned_pct":     percentage(n_misaligned,  n_res),
+        "sector_aligned":     n_sector_aligned,
+        "sector_partial":     n_sector_partial,
+        "sector_misaligned":  n_sector_misaligned,
+        "by_gender":          by_gender,
+        "by_degree":          by_degree,
+        "top_domains":        top_domains,
+        "focus_areas":        focus_areas,
+    }
+
+
+def aggregate_focus_areas(staff: pd.DataFrame) -> dict[str, float]:
+    totals: dict[str, float] = {area: 0.0 for area in FOCUS_AREAS}
+
+    for _, person in staff.iterrows():
+        focus_entries = []
+        for i in (1, 2, 3):
+            area = str(person.get(f"focus_{i}_area", "")).strip()
+            pct  = float(person.get(f"focus_{i}_pct", 0))
+            if area and area != "nan":
+                focus_entries.append((area, pct))
+
+        if not focus_entries:
+            continue
+
+        total_pct = sum(pct for _, pct in focus_entries)
+        if total_pct == 0:
+            default_weights = [50.0, 25.0, 10.0]
+            focus_entries   = [(area, default_weights[i]) for i, (area, _) in enumerate(focus_entries)]
+            total_pct       = sum(w for _, w in focus_entries)
+
+        for area, pct in focus_entries:
+            canonical = next((fa for fa in FOCUS_AREAS if fa.lower() == area.lower()), None)
+            if canonical:
+                totals[canonical] += pct / 100.0
+
+    return totals
+
+
+# Alignment (per-employee)
 
 def classify_alignment(df: pd.DataFrame) -> pd.DataFrame:
     df["alignment"]        = df.apply(classify_institute_alignment, axis=1)
@@ -623,33 +812,63 @@ def _report_focus_areas(df: pd.DataFrame, suffix: str = ""):
     log.info("Translation report saved to %s", out)
 
 
-# Employee columns written to both output files
+# Employee columns written to staff output files
 _STAFF_COLS = [
     "sector", "institute", "career_path", "degree", "gender", "status",
     "focus_1_area", "focus_1_pct", "focus_2_area", "focus_2_pct", "focus_3_area", "focus_3_pct",
     "research_interest", "specialization", "alignment", "sector_alignment",
 ]
 
+_INSTITUTES_CSV_COLS = [
+    "institute", "sector", "total", "n_research", "n_engineering", "n_technical",
+    "n_admin", "n_executive", "n_phd", "n_on_scholarship", "n_resigned",
+    "n_transferred", "n_terminated", "research_pct", "admin_pct",
+    "leadership_pct", "phd_pct", "aligned", "partial", "misaligned",
+    "aligned_pct", "misaligned_pct", "sector_aligned", "sector_partial",
+    "sector_misaligned", "top_domains", "is_vp_office",
+]
+
 
 def _save_output(df: pd.DataFrame, meta: dict, out_path: Path, csv_mode: bool = False):
-    # Compute per-employee alignment fields
-    df = classify_alignment(df)
+    df, institutes, summary = build_hr_metrics(df)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    cols = [c for c in _STAFF_COLS if c in df.columns]
+    meta_json = {k: v for k, v in meta.items() if k != "dropped_rows"}
 
-    # File 1: cleaned_hr_data.json — employee records
-    records = json.loads(df[cols].to_json(orient="records", force_ascii=False))
-    out_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
-    log.info("Written to %s  (%d employees)", out_path, len(records))
+    # File 1: institution_hr.json — summary + institute analytics
+    output = {
+        "processed_at": datetime.now(timezone.utc).isoformat(),
+        "meta":         {**meta_json, "rows_loaded": len(df)},
+        "summary":      summary,
+        "institutes":   institutes,
+    }
+    out_path.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+    log.info("Written to %s  (%d institutes)", out_path, len(institutes))
 
-    # File 2: cleaned_hr_data.csv — same data as spreadsheet
-    csv_path = out_path.with_suffix(".csv")
-    df[cols].to_csv(csv_path, index=False, encoding="utf-8-sig")
-    log.info("Written to %s  (%d employees)", csv_path, len(df))
+    # File 2: institution_hr_staff.json — per-employee records
+    staff_cols    = [c for c in _STAFF_COLS if c in df.columns]
+    staff_records = json.loads(df[staff_cols].to_json(orient="records", force_ascii=False))
+    staff_json    = out_path.with_stem(out_path.stem + "_staff")
+    staff_json.write_text(json.dumps(staff_records, ensure_ascii=False, indent=2), encoding="utf-8")
+    log.info("Written to %s  (%d employees)", staff_json, len(staff_records))
+
+    # File 3: institution_hr_staff.csv — per-employee records as spreadsheet
+    staff_csv = staff_json.with_suffix(".csv")
+    df[staff_cols].to_csv(staff_csv, index=False, encoding="utf-8-sig")
+    log.info("Written to %s  (%d employees)", staff_csv, len(df))
+
+    # File 4: institution_hr_institutes.csv — institute analytics as flat spreadsheet
+    inst_rows = []
+    for inst in institutes:
+        row = {col: inst.get(col, "") for col in _INSTITUTES_CSV_COLS}
+        row["top_domains"] = "|".join(inst.get("top_domains", []))
+        inst_rows.append(row)
+    inst_csv = out_path.with_stem(out_path.stem + "_institutes").with_suffix(".csv")
+    pd.DataFrame(inst_rows).to_csv(inst_csv, index=False, encoding="utf-8-sig")
+    log.info("Written to %s  (%d institutes)", inst_csv, len(inst_rows))
 
     if meta.get("errors"):
-        log.warning("%d loading error(s)", len(meta["errors"]))
+        log.warning("%d loading error(s) — see 'meta.errors' in the output JSON", len(meta["errors"]))
 
 
 def main():
