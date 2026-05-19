@@ -816,7 +816,7 @@ def _report_focus_areas(df: pd.DataFrame, suffix: str = ""):
 _STAFF_COLS = [
     "sector", "institute", "career_path", "degree", "gender", "status",
     "focus_1_area", "focus_1_pct", "focus_2_area", "focus_2_pct", "focus_3_area", "focus_3_pct",
-    "research_interest", "specialization", "alignment", "sector_alignment",
+    "research_interest", "specialization",
 ]
 
 _INSTITUTES_CSV_COLS = [
