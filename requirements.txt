@@ -1,0 +1,7 @@
+# HR data pipeline dependencies
+# Pin these versions on every machine (local + server) to guarantee
+# identical Excel parsing behaviour (especially merged-cell handling in openpyxl).
+
+pandas==2.2.3
+openpyxl==3.1.5
+python-calamine==0.2.0
