@@ -157,27 +157,38 @@ def load_data(files: list[Path]) -> tuple[pd.DataFrame, dict]:
     all_dropped = []
     sheet_count = 0
 
+    print(f"\n{'─'*60}")
+    print(f"  {'FILE':<35} {'SHEETS':>6}  {'ROWS':>6}  {'DROPPED':>7}")
+    print(f"{'─'*60}")
+
     for path in files:
         if path.name.startswith("~$"):
             continue
-        log.info("  Reading %s", path.name)
         try:
             frames, errors, dropped = _read_file(path)
+            file_rows    = sum(len(f) for f in frames)
+            file_dropped = len(dropped) if not dropped.empty else 0
             all_frames.extend(frames)
             all_errors.extend(errors)
             sheet_count += len(frames)
             if not dropped.empty:
                 all_dropped.append(dropped)
+            print(f"  {path.name:<35} {len(frames):>6}  {file_rows:>6}  {file_dropped:>7}")
             for err in errors:
                 log.warning("  Skipped '%s' in %s: %s", err.get("sheet", "?"), path.name, err.get("reason", ""))
         except Exception as e:
             log.error("Failed to read %s: %s", path.name, e)
             all_errors.append({"file": path.name, "reason": str(e)})
+            print(f"  {path.name:<35} {'ERROR':>6}  {'0':>6}  {'—':>7}")
+
+    print(f"{'─'*60}")
 
     if not all_frames:
         raise ValueError("No valid HR data found in the provided files.")
 
     df = pd.concat(all_frames, ignore_index=True)
+    print(f"  {'TOTAL':<35} {sheet_count:>6}  {len(df):>6}")
+    print(f"{'─'*60}\n")
     log.info("  Loaded %d rows from %d sheet(s) across %d file(s)", len(df), sheet_count, len(files))
 
     meta = {
