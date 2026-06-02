@@ -1,54 +1,72 @@
-🧠 Description of the PGX Chatbot Code
+# PGX Chatbot — Pharmacogenomics RAG Assistant
 
-This Streamlit-based Python application implements a Retrieval-Augmented Generation (RAG) chatbot designed to assist healthcare professionals with pharmacogenomics (PGX)-related questions,
-specifically focusing on TPMT genotype-based dosing recommendations.
+A Retrieval-Augmented Generation (RAG) chatbot that assists healthcare professionals with pharmacogenomics (PGX) dosing recommendations, built with LangChain, OpenAI, and FAISS.
 
-🔍 How It Works
+## Overview
 
-Document Loading
-The app loads a text document (TPMT_doc_cleaned.txt) that contains pharmacogenomic guideline information. The text is split into smaller,
-overlapping chunks using the CharacterTextSplitter from Langchain to improve retrieval accuracy.
+This application provides clinical decision support for TPMT (thiopurine methyltransferase) genotype-based dosing guidance. It retrieves relevant passages from curated pharmacogenomics documents and uses GPT to generate context-aware clinical answers.
 
-Embedding and Index Creation
-Each text chunk is converted into numerical vector embeddings using OpenAI’s Embedding API (OpenAIEmbeddings).
-These embeddings are stored in a FAISS vector database, which allows efficient semantic search for relevant text passages when a question is asked.
+## How It Works
 
-Retriever and LLM Setup
-The FAISS retriever is connected to a GPT-3.5-turbo model via Langchain’s RetrievalQA chain. 
-This setup allows the model to retrieve the most relevant context from the documents before generating a response — a key part of the RAG approach.
+1. **Document Loading** — Loads the TPMT pharmacogenomics guideline document
+2. **Chunking** — Splits text into overlapping chunks for precise retrieval
+3. **Embedding** — Converts chunks to vector embeddings via OpenAI Embeddings API
+4. **Indexing** — Stores and queries embeddings using FAISS
+5. **Generation** — Uses GPT-3.5 Turbo to answer questions with retrieved context
 
-Streamlit Chat Interface
-The chatbot interface is built with Streamlit:
+## Features
 
-Displays the title “PGX Chatbot” along with the King Abdulaziz City for Science and Technology (KACST) logo.
+- Context-aware Q&A grounded in real clinical documents
+- Overlap-aware text chunking for retrieval accuracy
+- Streamlit interface for easy clinical use
+- Modular LangChain pipeline
 
-Accepts user questions in natural language.
+## Tech Stack
 
-Displays the full chat history dynamically (both user and model messages).
+| Component | Technology |
+|-----------|-----------|
+| Language | Python |
+| LLM | OpenAI GPT-3.5 Turbo |
+| Embeddings | OpenAI Embeddings |
+| Vector Store | FAISS |
+| Pipeline | LangChain |
+| UI | Streamlit |
 
-Question Answering Process
-When a user enters a query:
+## Getting Started
 
-The retriever fetches the most relevant document sections.
+### Prerequisites
 
-A context-rich prompt is built that includes the retrieved information.
+- Python 3.8+
+- OpenAI API key
 
-The GPT-3.5 model then generates a structured answer, typically showing Phenotype, Drug, and Dosing Recommendations in a table format.
+### Installation
 
-The chat history is updated and displayed to maintain a continuous conversation flow.
+```bash
+git clone https://github.com/DAleid/OpenAI-API-.git
+cd OpenAI-API-
+pip install openai langchain faiss-cpu streamlit tiktoken
+```
 
-⚙️ Technologies Used
+### Configuration
 
-Streamlit – for interactive user interface
+```bash
+export OPENAI_API_KEY=your_api_key_here
+```
 
-Langchain – to manage the retrieval and LLM pipeline
+### Run
 
-OpenAI GPT-3.5-turbo – for text generation
+```bash
+streamlit run Openai_langchain_chatbot.py
+```
 
-FAISS – for vector-based semantic search
+Open `http://localhost:8501`.
 
-Python – for overall application logic
+## Use Case
 
-🎯 Purpose
+Healthcare professionals can query the chatbot with questions like:
+- *"What dose adjustment is recommended for patients with TPMT poor metabolizer status?"*
+- *"How should I adjust thiopurine dosing for intermediate metabolizers?"*
 
-The chatbot aims to enhance clinical decision support by providing quick, evidence-based dosing recommendations derived from pharmacogenomic guidelines. It helps bridge the gap between complex genetic data and actionable treatment guidance for healthcare professionals.
+## License
+
+MIT License
